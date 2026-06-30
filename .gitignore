@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Bot runtime-generated logs and graph
+bot_json
+history.json
+balance_trend.png
