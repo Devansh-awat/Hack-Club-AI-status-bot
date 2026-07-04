@@ -101,7 +101,7 @@ def get_full_history():
 def calculate_usage_rate_and_predictions(current_balance):
     history = get_full_history()
     if not history:
-        return "Insufficient data", "Insufficient data"
+        return "Insufficient data", "Insufficient data", "Insufficient data"
 
     now = datetime.datetime.now(datetime.timezone.utc)
     cutoff = now - datetime.timedelta(days=5)
@@ -127,7 +127,7 @@ def calculate_usage_rate_and_predictions(current_balance):
     entries_5d = [e for e in entries if e[0] >= cutoff]
 
     if len(entries_5d) < 2:
-        return "Insufficient data", "Insufficient data"
+        return "Insufficient data", "Insufficient data", "Insufficient data"
 
     total_decrease = 0.0
     for i in range(1, len(entries_5d)):
@@ -143,12 +143,14 @@ def calculate_usage_rate_and_predictions(current_balance):
     time_span_seconds = (entries_5d[-1][0] - entries_5d[0][0]).total_seconds()
     
     if time_span_seconds < 60:
-        return "Insufficient data", "Insufficient data"
+        return "Insufficient data", "Insufficient data", "Insufficient data"
 
     rate_per_second = total_decrease / time_span_seconds
 
     if rate_per_second <= 0:
-        return "Never (no usage)", "Never (no usage)"
+        return "Never (no usage)", "Never (no usage)", "Never (no usage)"
+
+    rate_per_day = rate_per_second * 24 * 3600
 
     def format_time_remaining(target):
         if current_balance <= target:
@@ -171,8 +173,9 @@ def calculate_usage_rate_and_predictions(current_balance):
 
     time_to_10 = format_time_remaining(10.0)
     time_to_0 = format_time_remaining(0.0)
+    rate_str = f"${rate_per_day:.2f}/day"
 
-    return time_to_10, time_to_0
+    return time_to_10, time_to_0, rate_str
 
 def generate_trend_graph():
     history = get_full_history()
@@ -302,7 +305,7 @@ def run_bot_cycle():
 
         if CANVAS_ID:
             try:
-                time_to_10, time_to_0 = calculate_usage_rate_and_predictions(balance)
+                time_to_10, time_to_0, rate_per_day = calculate_usage_rate_and_predictions(balance)
                 
                 # Format last updated time: e.g., "July 4 2:18 pm UTC"
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -311,6 +314,7 @@ def run_bot_cycle():
                 markdown_payload = (
                     f"# AI API Balance Status\n\n"
                     f"**Current Balance:** ${balance:.2f}\n\n"
+                    f"**Usage Rate:** {rate_per_day}\n\n"
                     f"**Estimated time to reach $10:** {time_to_10}\n\n"
                     f"**Estimated time to reach $0:** {time_to_0}\n\n"
                     f"Balance trend:\n\n"
