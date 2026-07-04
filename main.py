@@ -280,7 +280,6 @@ def run_bot_cycle():
     balance = status_data.get("balanceRemaining", 0.0)
     print(f"Current Balance: ${balance:.2f}")
     
-    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     log_status_history(status_data)
     
     graph_path = generate_trend_graph()
@@ -316,16 +315,22 @@ def run_bot_cycle():
         if CANVAS_ID:
             try:
                 time_to_10, time_to_0 = calculate_usage_rate_and_predictions(balance)
+                
+                # Format last updated time: e.g., "July 4 2:18 pm utc"
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                time_str = now_utc.strftime("%B %-d %-I:%M ") + now_utc.strftime("%p").lower() + " utc"
+
                 markdown_payload = (
                     f"# AI API Balance Status\n\n"
                     f"**Current Balance:** ${balance:.2f}\n"
                     f"**Estimated time to reach $10:** {time_to_10}\n"
-                    f"**Estimated time to reach $0:** {time_to_0}\n"
-                    f"**Last Updated:** {timestamp}\n\n"
+                    f"**Estimated time to reach $0:** {time_to_0}\n\n"
                     f"Balance trend:\n\n"
                 )
                 if canvas_image_url:
-                    markdown_payload += f"![AI API Balance Trend]({canvas_image_url})\n"
+                    markdown_payload += f"![AI API Balance Trend]({canvas_image_url})\n\n"
+                
+                markdown_payload += f"Last updated {time_str}\n"
 
                 client.api_call(
                     "canvases.edit",
