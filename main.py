@@ -203,17 +203,6 @@ def generate_trend_graph():
     plt.close()
     return graph_path
 
-def upload_to_x0_at(file_path):
-    try:
-        with open(file_path, 'rb') as f:
-            res = requests.post('https://x0.at/', files={'file': f}, timeout=10)
-        if res.status_code == 200:
-            url = res.text.strip()
-            print(f"Uploaded to x0.at: {url}")
-            return url
-    except Exception as e:
-        print(f"Error uploading to x0.at: {e}")
-    return None
 
 def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state):
     active_ts = state.get(state_key)
@@ -309,8 +298,7 @@ def run_bot_cycle():
         except SlackApiError as e:
             print(f"Error uploading graph to Slack: {e.response['error']}")
         
-        public_url = upload_to_x0_at(graph_path)
-        canvas_image_url = public_url if public_url else new_permalink
+        canvas_image_url = f"https://hcai.devansh.hackclub.app/balance_trend.png?t={int(time.time())}"
 
         if CANVAS_ID:
             try:
@@ -395,6 +383,18 @@ class HistoryRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error serving history: {e}")
                 self.wfile.write(b"[]")
+        elif self.path.startswith('/balance_trend.png'):
+            if os.path.exists('balance_trend.png'):
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/png')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                with open('balance_trend.png', 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not Found")
         elif self.path == '/':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
@@ -407,10 +407,12 @@ class HistoryRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not Found")
 
     def do_HEAD(self):
-        if self.path == '/history' or self.path == '/':
+        if self.path == '/history' or self.path == '/' or self.path.startswith('/balance_trend.png'):
             self.send_response(200)
             if self.path == '/history':
                 self.send_header('Content-Type', 'application/json')
+            elif self.path.startswith('/balance_trend.png'):
+                self.send_header('Content-Type', 'image/png')
             else:
                 self.send_header('Content-Type', 'text/html')
             self.send_header('Access-Control-Allow-Origin', '*')
