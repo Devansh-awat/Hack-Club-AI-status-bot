@@ -274,6 +274,8 @@ def run_bot_cycle():
     
     log_status_history(status_data)
     
+    time_to_10, time_to_0, rate_per_day = calculate_usage_rate_and_predictions(balance)
+    
     graph_path = generate_trend_graph()
     
     state = load_state()
@@ -305,8 +307,6 @@ def run_bot_cycle():
 
         if CANVAS_ID:
             try:
-                time_to_10, time_to_0, rate_per_day = calculate_usage_rate_and_predictions(balance)
-                
                 # Format last updated time: e.g., "July 4 2:18 pm UTC"
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
                 time_str = now_utc.strftime("%B %-d %-I:%M ") + now_utc.strftime("%p").lower() + " UTC"
@@ -343,7 +343,7 @@ def run_bot_cycle():
             except SlackApiError as e:
                 print(f"Error updating canvas: {e.response['error']}")
 
-    msg_helpers = f"<@U059VC0UDEU> ${balance:.2f} remaining, please top it up or we'll see 100+msgs in <#{hcai_help_channel}> and <#{hackclub_ai_channel}> "
+    msg_helpers = f"<@U059VC0UDEU> ${balance:.2f} remaining ({time_to_0} left until $0), please top it up or we'll see 100+msgs in <#{hcai_help_channel}> and <#{hackclub_ai_channel}> "
     msg_normal = f"Hack Club AI is out of balance, currently at ${balance:.2f} (yes again!)"
 
     manage_channel_alert(
