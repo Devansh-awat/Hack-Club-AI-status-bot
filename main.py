@@ -9,7 +9,7 @@ from slack_sdk.errors import SlackApiError
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 import threading
 
 load_dotenv()
@@ -22,8 +22,9 @@ hcai_help_channel = "C0BDLT68ENN"
 hackclub_ai_channel = "C099S1LLFFU"
 
 ENDPOINT = "https://ai.hackclub.com/up"
-STATE_FILE = "bot_json"
-HISTORY_FILE = "history.json"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+STATE_FILE = os.path.join(DATA_DIR, "bot_json")
+HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
 
 client = WebClient(token=SLACK_TOKEN, retry_handlers=[])
 db_lock = threading.Lock()
@@ -130,22 +131,29 @@ def calculate_usage_rate_and_predictions(current_balance):
         return "Insufficient data", "Insufficient data", "Insufficient data"
 
     total_decrease = 0.0
+    total_time_seconds = 0.0
     for i in range(1, len(entries_5d)):
         prev_dt, prev_bal = entries_5d[i-1]
         curr_dt, curr_bal = entries_5d[i]
         
-        # Ensure refill doesn't confuse it
+        # Ignore refills (balance increases)
+        if curr_bal > prev_bal:
+            continue
+            
+        # Ignore time when balance is under 0
+        if prev_bal < 0:
+            continue
+            
         delta = prev_bal - curr_bal
         if delta > 0:
             total_decrease += delta
+            
+        total_time_seconds += (curr_dt - prev_dt).total_seconds()
 
-    # Total time span in seconds
-    time_span_seconds = (entries_5d[-1][0] - entries_5d[0][0]).total_seconds()
-    
-    if time_span_seconds < 60:
+    if total_time_seconds < 60:
         return "Insufficient data", "Insufficient data", "Insufficient data"
 
-    rate_per_second = total_decrease / time_span_seconds
+    rate_per_second = total_decrease / total_time_seconds
 
     if rate_per_second <= 0:
         return "Never (no usage)", "Never (no usage)", "Never (no usage)"
@@ -201,13 +209,13 @@ def generate_trend_graph():
     plt.grid(True)
     plt.gcf().autofmt_xdate()
 
-    graph_path = "balance_trend.png"
+    graph_path = os.path.join(DATA_DIR, "balance_trend.png")
     plt.savefig(graph_path, bbox_inches='tight')
     plt.close()
     return graph_path
 
 
-def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state):
+def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state, recovery_text=None):
     active_ts = state.get(state_key)
     if should_alert:
         if not active_ts:
@@ -260,6 +268,13 @@ def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state)
 
                 state[state_key] = None
                 print(f"[{channel_id}] Balance recovered. Alert and pin notifications removed.")
+
+                if recovery_text:
+                    try:
+                        client.chat_postMessage(channel=channel_id, text=recovery_text)
+                        print(f"[{channel_id}] Recovery message posted.")
+                    except SlackApiError as e:
+                        print(f"[{channel_id}] Error posting recovery message: {e.response['error']}")
             except SlackApiError as e:
                 print(f"[{channel_id}] Error clearing alert: {e.response['error']}")
 
@@ -303,7 +318,7 @@ def run_bot_cycle():
         except SlackApiError as e:
             print(f"Error uploading graph to Slack: {e.response['error']}")
         
-        canvas_image_url = f"https://hcai.devansh.hackclub.app/balance_trend.png?t={int(time.time())}"
+        canvas_image_url = f"https://hcai.devansh.dino.icu/balance_trend.png?t={int(time.time())}"
 
         if CANVAS_ID:
             try:
@@ -311,8 +326,13 @@ def run_bot_cycle():
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
                 time_str = now_utc.strftime("%B %-d %-I:%M ") + now_utc.strftime("%p").lower() + " UTC"
 
+                # NOTE: Do not start the body with an H1 matching the canvas
+                # title. Slack auto-injects a sticky title H1 at the top of the
+                # canvas, and a full-replace body whose first line is that same
+                # H1 intermittently renders a duplicate copy of the content
+                # (Slack canvas bug: slackapi/slack-mcp-plugin#30). The sticky
+                # title already shows the name, so omit the redundant heading.
                 markdown_payload = (
-                    f"# AI API Balance Status\n\n"
                     f"**Current Balance:** ${balance:.2f}\n\n"
                     f"**Usage Rate:** {rate_per_day}\n\n"
                     f"**Estimated time to reach $10:** {time_to_10}\n\n"
@@ -343,8 +363,16 @@ def run_bot_cycle():
             except SlackApiError as e:
                 print(f"Error updating canvas: {e.response['error']}")
 
-    msg_helpers = f"<@U059VC0UDEU> ${balance:.2f} remaining ({time_to_0} left until $0), please top it up or we'll see 100+msgs in <#{hcai_help_channel}> and <#{hackclub_ai_channel}> "
-    msg_normal = f"Hack Club AI is out of balance, currently at ${balance:.2f} (yes again!)"
+    msg_helpers = f"<@U059VC0UDEU> ${balance:.2f} remaining ({time_to_0} left until $0), please top it up or we'll see 100+msgs in <#{hackclub_ai_channel}> "
+    msg_hackclub_ai = (
+        "<!subteam^S0BHUGWKWQH> :siren-siren: Note: Hack Club AI is currently down for everyone as the OpenRouter balance has run out of credit (again!)\n\n"
+        ":hcb-icon: It'll be restored once HCAI gets more money and is reactivated! There is no fixed ETA for this.\n\n"
+        ":hourglass_flowing_sand: For now you can use the models openrouter/free which routes your request to an available free model, keep in mind this may have higher limits.\n\n"
+        f":question_1: For any questions, please ask in <#{hcai_help_channel}>!"
+    )
+    msg_recovery_hackclub_ai = (
+        f"<!subteam^S0BHUGWKWQH> Hack Club AI has been topped up to ${balance:.2f}"
+    )
 
     manage_channel_alert(
         channel_id=hcai_helpers_channel,
@@ -354,25 +382,28 @@ def run_bot_cycle():
         state=state
     )
 
-    manage_channel_alert(
-        channel_id=hcai_help_channel,
-        state_key="hackclub_ai_ts",
-        should_alert=(balance < 0.0),
-        alert_text=msg_normal,
-        state=state
-    )
+    if state.get("hcai_help_ts"):
+        manage_channel_alert(
+            channel_id=hcai_help_channel,
+            state_key="hcai_help_ts",
+            should_alert=False,
+            alert_text="",
+            state=state
+        )
 
     manage_channel_alert(
         channel_id=hackclub_ai_channel,
         state_key="hackclub_ai_ts",
         should_alert=(balance < 0.0),
-        alert_text=msg_normal,
-        state=state
+        alert_text=msg_hackclub_ai,
+        state=state,
+        recovery_text=msg_recovery_hackclub_ai
     )
 
     save_state(state)
 
 class HistoryRequestHandler(BaseHTTPRequestHandler):
+    timeout = 15
     def do_GET(self):
         if self.path == '/history':
             self.send_response(200)
@@ -388,12 +419,13 @@ class HistoryRequestHandler(BaseHTTPRequestHandler):
                 print(f"Error serving history: {e}")
                 self.wfile.write(b"[]")
         elif self.path.startswith('/balance_trend.png'):
-            if os.path.exists('balance_trend.png'):
+            graph_path = os.path.join(DATA_DIR, "balance_trend.png")
+            if os.path.exists(graph_path):
                 self.send_response(200)
                 self.send_header('Content-Type', 'image/png')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                with open('balance_trend.png', 'rb') as f:
+                with open(graph_path, 'rb') as f:
                     self.wfile.write(f.read())
             else:
                 self.send_response(404)
@@ -433,7 +465,8 @@ class HTTPServerV6(HTTPServer):
 def start_http_server():
     server_address = ('', 8000)
     try:
-        httpd = HTTPServerV6(server_address, HistoryRequestHandler)
+        httpd = ThreadingHTTPServer(("0.0.0.0", 8000), HistoryRequestHandler)
+        httpd.daemon_threads = True
         print("Starting HTTP server on port 8000 (IPv6 dual-stack)...")
         httpd.serve_forever()
     except Exception as e:
