@@ -1,11 +1,13 @@
 import os
 import time
 import json
+import traceback
 import datetime
+import urllib.error
 import requests
 from dotenv import load_dotenv
 from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+from slack_sdk.errors import SlackClientError
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -25,6 +27,8 @@ ENDPOINT = "https://ai.hackclub.com/up"
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 STATE_FILE = os.path.join(DATA_DIR, "bot_json")
 HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 client = WebClient(token=SLACK_TOKEN, retry_handlers=[])
 db_lock = threading.Lock()
@@ -225,20 +229,20 @@ def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state,
                 client.pins_add(channel=channel_id, timestamp=new_ts)
                 state[state_key] = new_ts
                 print(f"[{channel_id}] Alert posted and pinned.")
-            except SlackApiError as e:
-                print(f"[{channel_id}] Error posting alert: {e.response['error']}")
+            except (SlackClientError, urllib.error.URLError) as e:
+                print(f"[{channel_id}] Error posting alert: {e}")
         else:
             try:
                 client.chat_update(channel=channel_id, ts=active_ts, text=alert_text)
                 print(f"[{channel_id}] Alert updated with current balance.")
-            except SlackApiError as e:
-                print(f"[{channel_id}] Error updating alert: {e.response['error']}")
+            except (SlackClientError, urllib.error.URLError) as e:
+                print(f"[{channel_id}] Error updating alert: {e}")
     else:
         if active_ts:
             try:
                 try:
                     client.pins_remove(channel=channel_id, timestamp=active_ts)
-                except SlackApiError:
+                except (SlackClientError, urllib.error.URLError):
                     pass
 
                 try:
@@ -248,7 +252,7 @@ def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state,
                         reply_ts = reply.get("ts")
                         if reply_ts != active_ts:
                             client.chat_delete(channel=channel_id, ts=reply_ts)
-                except SlackApiError:
+                except (SlackClientError, urllib.error.URLError):
                     pass
 
                 client.chat_delete(channel=channel_id, ts=active_ts)
@@ -273,10 +277,10 @@ def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state,
                     try:
                         client.chat_postMessage(channel=channel_id, text=recovery_text)
                         print(f"[{channel_id}] Recovery message posted.")
-                    except SlackApiError as e:
-                        print(f"[{channel_id}] Error posting recovery message: {e.response['error']}")
-            except SlackApiError as e:
-                print(f"[{channel_id}] Error clearing alert: {e.response['error']}")
+                    except (SlackClientError, urllib.error.URLError) as e:
+                        print(f"[{channel_id}] Error posting recovery message: {e}")
+            except (SlackClientError, urllib.error.URLError) as e:
+                print(f"[{channel_id}] Error clearing alert: {e}")
 
 def run_bot_cycle():
     status_data = get_status_data()
@@ -301,8 +305,8 @@ def run_bot_cycle():
             try:
                 client.files_delete(file=old_file_id)
                 print(f"Deleted old graph file: {old_file_id}")
-            except SlackApiError as e:
-                print(f"Error deleting old graph: {e.response['error']}")
+            except (SlackClientError, urllib.error.URLError) as e:
+                print(f"Error deleting old graph: {e}")
         
         new_file_id = None
         new_permalink = None
@@ -315,8 +319,8 @@ def run_bot_cycle():
             new_permalink = upload_res["file"]["permalink"]
             state["last_graph_file_id"] = new_file_id
             print(f"Uploaded new graph file: {new_file_id}")
-        except SlackApiError as e:
-            print(f"Error uploading graph to Slack: {e.response['error']}")
+        except (SlackClientError, urllib.error.URLError) as e:
+            print(f"Error uploading graph to Slack: {e}")
         
         canvas_image_url = f"https://hcai.devansh.dino.icu/balance_trend.png?t={int(time.time())}"
 
@@ -360,8 +364,8 @@ def run_bot_cycle():
                     }
                 )
                 print("Canvas updated successfully.")
-            except SlackApiError as e:
-                print(f"Error updating canvas: {e.response['error']}")
+            except (SlackClientError, urllib.error.URLError) as e:
+                print(f"Error updating canvas: {e}")
 
     msg_helpers = f"<@U059VC0UDEU> ${balance:.2f} remaining ({time_to_0} left until $0), please top it up or we'll see 100+msgs in <#{hackclub_ai_channel}> "
     msg_hackclub_ai = (
@@ -478,5 +482,8 @@ if __name__ == "__main__":
     
     print("Starting Slack status bot...")
     while True:
-        run_bot_cycle()
+        try:
+            run_bot_cycle()
+        except Exception:
+            traceback.print_exc()
         time.sleep(60)
