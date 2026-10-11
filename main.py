@@ -287,20 +287,39 @@ def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state,
             try:
                 try:
                     client.pins_remove(channel=channel_id, timestamp=active_ts)
+                    print(f"[{channel_id}] Unpinned stale alert.")
                 except (SlackClientError, urllib.error.URLError):
                     pass
 
+                # Fetch current text of the alert to apply strikethrough instead of deleting
+                text_to_strike = alert_text
                 try:
                     replies_resp = client.conversations_replies(channel=channel_id, ts=active_ts)
-                    replies = replies_resp.get("messages", [])
-                    for reply in reversed(replies):
-                        reply_ts = reply.get("ts")
-                        if reply_ts != active_ts:
-                            client.chat_delete(channel=channel_id, ts=reply_ts)
+                    messages = replies_resp.get("messages", [])
+                    for m in messages:
+                        if m.get("ts") == active_ts:
+                            text_to_strike = m.get("text", alert_text)
+                            break
                 except (SlackClientError, urllib.error.URLError):
                     pass
 
-                client.chat_delete(channel=channel_id, ts=active_ts)
+                if text_to_strike:
+                    struck_lines = []
+                    for line in text_to_strike.split("\n"):
+                        if line.strip():
+                            if line.startswith("~") and line.endswith("~"):
+                                struck_lines.append(line)
+                            else:
+                                struck_lines.append(f"~{line}~")
+                        else:
+                            struck_lines.append(line)
+                    struck_text = "\n".join(struck_lines)
+
+                    try:
+                        client.chat_update(channel=channel_id, ts=active_ts, text=struck_text)
+                        print(f"[{channel_id}] Alert updated with strikethrough.")
+                    except (SlackClientError, urllib.error.URLError) as e:
+                        print(f"[{channel_id}] Error striking through stale alert: {e}")
 
                 try:
                     history_resp = client.conversations_history(channel=channel_id, limit=50)
@@ -316,7 +335,7 @@ def manage_channel_alert(channel_id, state_key, should_alert, alert_text, state,
                     print(f"[{channel_id}] Error cleaning system pin notifications: {e}")
 
                 state[state_key] = None
-                print(f"[{channel_id}] Balance recovered. Alert and pin notifications removed.")
+                print(f"[{channel_id}] Alert resolved. Pin removed and text struck through.")
 
                 if recovery_text:
                     try:
