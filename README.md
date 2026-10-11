@@ -4,11 +4,11 @@ a small slack bot that watches the hack club ai api balance and lets people know
 
 ## what it does
 
-- checks the balance from `https://ai.hackclub.com/up` every minute
+- checks the balance and service health from `https://ai.hackclub.com/up` every minute
 - logs each reading to `history.json` and draws a trend graph (`balance_trend.png`)
-- posts and pins a warning in slack when the balance drops below $10, and a critical alert when it goes negative
-- cleans up the alerts and pins once the balance recovers
-- uploads the graph to slack and updates a canvas with the current balance
+- posts and pins warnings in slack when the balance drops below $10, when balance goes negative, when OpenRouter goes down, and when the daily limit runs out
+- automatically unpins and cleans up alerts once recovered
+- uploads the graph to slack and updates a canvas with live service statuses, spent today, and balance predictions
 
 ## setup
 

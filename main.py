@@ -42,15 +42,23 @@ def get_status_data():
         return None
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            return json.load(f)
-    return {
+    state = {
         "hcai_helpers_ts": None,
         "hcai_help_ts": None,
         "hackclub_ai_ts": None,
+        "openrouter_outage_ts": None,
+        "daily_limit_ts": None,
         "last_graph_file_id": None
     }
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r') as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    state.update(loaded)
+        except Exception as e:
+            print(f"Error loading state: {e}")
+    return state
 
 def save_state(state):
     with open(STATE_FILE, 'w') as f:
@@ -188,6 +196,43 @@ def calculate_usage_rate_and_predictions(current_balance):
     rate_str = f"${rate_per_day:.2f}/day"
 
     return time_to_10, time_to_0, rate_str
+
+def calculate_spent_today(current_limit_remaining):
+    if not isinstance(current_limit_remaining, (int, float)):
+        return None, 70.0
+    history = get_full_history()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today_start_ts = int(now_utc.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+    max_limit = max(70.0, float(current_limit_remaining))
+    if history:
+        for entry in reversed(history):
+            ts = entry.get("timestamp")
+            if isinstance(ts, (int, float)):
+                if ts >= today_start_ts:
+                    lim = entry.get("keyLimitRemaining")
+                    if isinstance(lim, (int, float)) and lim > max_limit:
+                        max_limit = float(lim)
+                else:
+                    break
+
+    spent = max(0.0, max_limit - float(current_limit_remaining))
+    return spent, max_limit
+
+def get_daily_reset_time_str():
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    next_reset = (now_utc + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    seconds_left = max(0, int((next_reset - now_utc).total_seconds()))
+    hours, remainder = divmod(seconds_left, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    return " ".join(parts) if parts else "0m"
 
 def generate_trend_graph():
     history = get_full_history()
@@ -336,8 +381,32 @@ def run_bot_cycle():
                 # H1 intermittently renders a duplicate copy of the content
                 # (Slack canvas bug: slackapi/slack-mcp-plugin#30). The sticky
                 # title already shows the name, so omit the redundant heading.
+                services = [
+                    ("OpenRouter", status_data.get("openRouter")),
+                    ("PostgreSQL", status_data.get("postgres")),
+                    ("ClickHouse", status_data.get("clickhouse")),
+                    ("Mistral", status_data.get("mistral")),
+                    ("Exa", status_data.get("exa")),
+                ]
+                status_parts = [f"{'🟢' if ok else '🔴'} {name}" for name, ok in services]
+                status_bar = " | ".join(status_parts)
+
+                key_limit_input = (
+                    status_data.get("keyLimitRemaining")
+                    if status_data.get("keyLimitRemaining") is not None
+                    else status_data.get("dailyKeyUsageRemaining")
+                )
+                spent_today, max_limit = calculate_spent_today(key_limit_input)
+                spent_today_str = (
+                    f"${spent_today:.2f} / ${max_limit:.2f}"
+                    if spent_today is not None
+                    else "N/A"
+                )
+
                 markdown_payload = (
+                    f"**System Status:**\n{status_bar}\n\n"
                     f"**Current Balance:** ${balance:.2f}\n\n"
+                    f"**Spent Today:** {spent_today_str}\n\n"
                     f"**Usage Rate:** {rate_per_day}\n\n"
                     f"**Estimated time to reach $10:** {time_to_10}\n\n"
                     f"**Estimated time to reach $0:** {time_to_0}\n\n"
@@ -402,6 +471,39 @@ def run_bot_cycle():
         alert_text=msg_hackclub_ai,
         state=state,
         recovery_text=msg_recovery_hackclub_ai
+    )
+
+    # OpenRouter outage alert (only if openRouter explicitly reports False)
+    should_alert_openrouter = (status_data.get("openRouter") is False)
+    msg_openrouter_down = ":siren-real::siren-real: <!subteam^S0BHUGWKWQH> openrouter is down :siren-real::siren-real:"
+    msg_openrouter_up = "<!subteam^S0BHUGWKWQH> openrouter is back up"
+
+    manage_channel_alert(
+        channel_id=hackclub_ai_channel,
+        state_key="openrouter_outage_ts",
+        should_alert=should_alert_openrouter,
+        alert_text=msg_openrouter_down,
+        state=state,
+        recovery_text=msg_openrouter_up
+    )
+
+    # Daily key balance over alert
+    key_limit_rem = status_data.get("keyLimitRemaining")
+    if key_limit_rem is None:
+        key_limit_rem = status_data.get("dailyKeyUsageRemaining")
+    should_alert_daily = (isinstance(key_limit_rem, (int, float)) and key_limit_rem <= 0.0)
+
+    reset_time_str = get_daily_reset_time_str()
+    msg_daily_over = f":siren-real::siren-real: <!subteam^S0BHUGWKWQH> no more balance left for today, resets in {reset_time_str} :siren-real::siren-real:"
+    msg_daily_reset = "<!subteam^S0BHUGWKWQH> Daily balance has reset for today!"
+
+    manage_channel_alert(
+        channel_id=hackclub_ai_channel,
+        state_key="daily_limit_ts",
+        should_alert=should_alert_daily,
+        alert_text=msg_daily_over,
+        state=state,
+        recovery_text=msg_daily_reset
     )
 
     save_state(state)
