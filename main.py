@@ -33,6 +33,15 @@ os.makedirs(DATA_DIR, exist_ok=True)
 client = WebClient(token=SLACK_TOKEN, retry_handlers=[])
 db_lock = threading.Lock()
 
+# History older than this is kept on disk but never parsed/rendered.
+HISTORY_TRIM_DAYS = 7
+# Rebuild + re-upload the balance graph at most this often (seconds); the
+# canvas embed caches the image URL with a timestamp, so slow refreshes
+# just show a slightly older trend line. Alerts/canvas still run every cycle.
+GRAPH_UPDATE_INTERVAL = 3600
+_last_graph_at = 0.0
+
+
 def get_status_data():
     try:
         response = requests.get(ENDPOINT, timeout=10)
@@ -88,7 +97,16 @@ def get_full_history():
                     history = json.load(f)
             except Exception:
                 pass
-    
+
+    # Only keep parseable entries from the last HISTORY_TRIM_DAYS days; the
+    # full history.json stays on disk untouched (the /history endpoint and
+    # the rate calculation only ever use recent entries anyway).
+    cutoff_ms = (time.time() - HISTORY_TRIM_DAYS * 86400) * 1000
+    history = [
+        e for e in history
+        if isinstance(e, dict) and isinstance(e.get("timestamp"), (int, float))
+        and e["timestamp"] >= cutoff_ms
+    ]
     formatted_history = []
     for entry in history:
         if "balanceRemaining" in entry and isinstance(entry["balanceRemaining"], (int, float)):
@@ -380,7 +398,15 @@ def run_bot_cycle():
 
         time_to_10, time_to_0, rate_per_day = calculate_usage_rate_and_predictions(balance)
 
-        graph_path = generate_trend_graph()
+        # Graph rebuild + Slack re-upload is the expensive part (matplotlib render
+        # + file upload). Rate-limit it; on non-graph cycles keep the last file.
+        global _last_graph_at
+        now = time.time()
+        if now - _last_graph_at >= GRAPH_UPDATE_INTERVAL:
+            graph_path = generate_trend_graph()
+            _last_graph_at = now
+        else:
+            graph_path = None
 
         if graph_path:
             old_file_id = state.get("last_graph_file_id")
@@ -405,7 +431,13 @@ def run_bot_cycle():
             except (SlackClientError, urllib.error.URLError) as e:
                 print(f"Error uploading graph to Slack: {e}")
 
-            canvas_image_url = f"https://hcai.devansh.dino.icu/balance_trend.png?t={int(time.time())}"
+            # The local balance_trend.png only refreshes on graph cycles; serve its
+            # last-updated timestamp so Slack's canvas cache-bust matches the file.
+            canvas_image_url = (
+                f"https://hcai.devansh.dino.icu/balance_trend.png?t={int(_last_graph_at)}"
+                if _last_graph_at
+                else ""
+            )
 
             if CANVAS_ID:
                 try:
