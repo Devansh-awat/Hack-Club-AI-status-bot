@@ -434,7 +434,7 @@ def run_bot_cycle():
             # The local balance_trend.png only refreshes on graph cycles; serve its
             # last-updated timestamp so Slack's canvas cache-bust matches the file.
             canvas_image_url = (
-                f"https://hcai.devansh.dino.icu/balance_trend.png?t={int(_last_graph_at)}"
+                f"https://hcai.devanshx.com/balance_trend.png?t={int(_last_graph_at)}"
                 if _last_graph_at
                 else ""
             )
